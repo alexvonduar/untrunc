@@ -175,6 +175,7 @@ void Mp4::saveVideo(string filename) {
 		Track &track = tracks[i];
 		track.writeToAtoms();
 		//convert to movie timescale
+		cout << "Track duration: " << track.duration << " movie timescale: " << timescale << " track timescale: " << track.timescale << endl;
 		int track_duration = (int)(double)track.duration * ((double)timescale / (double)track.timescale);
 		if(track_duration > duration) duration = track_duration;
 
@@ -223,7 +224,7 @@ void Mp4::analyze() {
 
 
 	Atom *mdat = root->atomByName("mdat");
-	for(unsigned int i = 1; i < tracks.size(); i++) {
+	for(unsigned int i = 0; i < tracks.size(); i++) {
 		cout << "\n\n Track " << i << endl;
 		Track &track = tracks[i];
 
@@ -235,7 +236,7 @@ void Mp4::analyze() {
 			int offset = track.offsets[k] - (mdat->start + 8);
 			int begin =  mdat->readInt(offset);
 			int next =  mdat->readInt(offset + 4);
-			cout << k << " Size: " << track.sizes[k] << " offset " << track.offsets[k]
+			cout << "\n" << k << " Size: " << track.sizes[k] << " offset " << track.offsets[k]
 					<< "  begin: " << hex << begin << " " << next << dec << endl;
 		}
 
@@ -251,13 +252,19 @@ void Mp4::analyze() {
 					<< "  begin: " << hex << begin << " " << next << " end: " << end << dec << endl;
 
 			bool matches = track.codec.matchSample(start, maxlength);
-			int length= track.codec.getLength(start, maxlength);
+			int duration = 0;
+			int length= track.codec.getLength(start, maxlength, duration);
+			//TODO check if duration is working with the stts duration.
+
 			if(!matches) {
 				cout << "Match failed! Hit enter for next match." << endl;
 				getchar();
 			}
 			//assert(matches);
 			cout << "Length: " << length << " true length: " << track.sizes[i] << endl;
+			if(length != track.sizes[i])
+				getchar();
+
 			//assert(length == track.sizes[i]);
 
 		}
@@ -318,16 +325,27 @@ void Mp4::repair(string filename) {
 		break;
 	}
 
+
 	for(unsigned int i = 0; i < tracks.size(); i++)
 		tracks[i].clear();
 
+	//mp4a is more reliable than avc1.
+	if(tracks.size() > 1 && tracks[1].codec.name == "mp4a") {
+		Track tmp = tracks[0];
+		tracks[0] = tracks[1];
+		tracks[1] = tmp;
+	}
+
+	//mp4a can be decoded and repors the number of samples (duration in samplerate scale).
+	//in some videos the duration (stts) can be variable and we can rebuild them using these values.
+	vector<int> audiotimes;
 	unsigned long count = 0;
 	off_t offset = 0;
 	while(offset < mdat->contentSize()) {
 
 		//unsigned char *start = &(mdat->content[offset]);
 		int64_t maxlength = mdat->contentSize() - offset;
-		if(maxlength > 800000) maxlength = 800000;
+		if(maxlength > 1600000) maxlength = 1600000;
 		unsigned char *start = mdat->getFragment(offset, maxlength);
 
 		uint begin =  mdat->readInt(offset);
@@ -348,15 +366,25 @@ void Mp4::repair(string filename) {
 
 #ifdef VERBOSE1
 		cout << "Offset: " << offset << " ";
-		cout << hex << begin << " " << next << dec;
+		cout << hex << begin << " " << next << dec << endl;
 #endif
+
+		//skip fake moov
+		if(start[4] == 'm' && start[5] == 'o' && start[6] == 'o' && start[7] == 'v') {
+			cout << "Skipping moov atom: " << swap32(begin) << endl;
+			offset += swap32(begin);
+			continue;
+		}
+
 		bool found = false;
 		for(unsigned int i = 0; i < tracks.size(); i++) {
 			Track &track = tracks[i];
+			cout << "Track codec: " << track.codec.name << endl;
 			//sometime audio packets are difficult to match, but if they are the only ones....
+			int duration =0;
 			if(tracks.size() > 1 && !track.codec.matchSample(start, maxlength)) continue;
-			int length = track.codec.getLength(start, maxlength);
-			if(length < -1 || length > 800000) {
+			int length = track.codec.getLength(start, maxlength, duration);
+			if(length < -1 || length > 1600000) {
 				cout << endl << "Invalid length. " << length << ". Wrong match in track: " << i << endl;
 				continue;
 			}
@@ -375,6 +403,9 @@ void Mp4::repair(string filename) {
 			track.offsets.push_back(offset);
 			track.sizes.push_back(length);
 			offset += length;
+
+			if(duration)
+				audiotimes.push_back(duration);
 
 			found = true;
 			break;
@@ -398,8 +429,12 @@ void Mp4::repair(string filename) {
 
 	cout << "Found " << count << " packets\n";
 
-	for(unsigned int i = 0; i < tracks.size(); i++)
+	for(unsigned int i = 0; i < tracks.size(); i++) {
+		if(audiotimes.size() == tracks[i].offsets.size())
+			swap(audiotimes, tracks[i].times);
+
 		tracks[i].fixTimes();
+	}
 
 	Atom *original_mdat = root->atomByName("mdat");
 	mdat->start = original_mdat->start;

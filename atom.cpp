@@ -116,7 +116,7 @@ void Atom::print(int offset) {
         //lets just read the first entry
         int entries = readInt(4);
         cout << indent << " Entries: " << entries << endl;
-        for(int i = 0; i < entries && i < 10; i++)
+		for(int i = 0; i < entries && i < 30; i++)
             cout << indent << " samples: " << readInt(8 + 8*i) << " for: " << readInt(12 + 8*i) << endl;
 
     } else if(name == string("stss")) { //sync sample: (keyframes)
@@ -250,12 +250,12 @@ void Atom::updateLength() {
 }
 
 int Atom::readInt(int64_t offset) {
-    return be32toh(*(int *)&(content[offset]));
+	return swap32(*(int *)&(content[offset]));
 }
 
 void Atom::writeInt(int value, int64_t offset) {
     assert(content.size() >= offset + 4);
-    *(int *)&(content[offset]) = htobe32(value);
+	*(int *)&(content[offset]) = swap32(value);
 }
 
 void Atom::readChar(char *str, int64_t offset, int64_t length) {
